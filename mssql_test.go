@@ -36,30 +36,28 @@ func defaultDriver() string {
 	}
 }
 
+func isFreeTDS() bool {
+	return *msdriver == "freetds"
+}
+
 func mssqlConnect() (db *sql.DB, stmtCount int, err error) {
-	var params map[string]string
-	if runtime.GOOS == "windows" {
-		params = map[string]string{
+	params := map[string]string{
 			"driver":   *msdriver,
 			"server":   *mssrv,
 			"database": *msdb,
 		}
+	if isFreeTDS() {
+		params["uid"] = *msuser
+		params["pwd"] = *mspass
+		params["port"] = *msport
+		//params["clientcharset"] = "UTF-8"
+		//params["debugflags"] = "0xffff"
+	} else {
 		if len(*msuser) == 0 {
 			params["trusted_connection"] = "yes"
 		} else {
 			params["uid"] = *msuser
 			params["pwd"] = *mspass
-		}
-	} else {
-		params = map[string]string{
-			"driver":   *msdriver,
-			"server":   *mssrv,
-			"port":     *msport,
-			"database": *msdb,
-			"uid":      *msuser,
-			"pwd":      *mspass,
-			//"clientcharset": "UTF-8",
-			//"debugflags": "0xffff",
 		}
 	}
 	var c string
@@ -135,7 +133,7 @@ func serverVersion(db *sql.DB) (sqlVersion, sqlPartNumber, osVersion string, err
 	osVersion = a[3][i+4:]
 	sqlPartNumber = strings.Trim(l1[1], " ")
 	l12 := strings.SplitN(sqlPartNumber, " ", -1)
-	if len(l12) != 2 {
+	if len(l12) < 2 {
 		return "", "", "", errors.New("SQL Server version first line must have space after part number in it: " + v)
 	}
 	sqlPartNumber = l12[0]
@@ -555,7 +553,7 @@ var typeTests = []typeTest{
 	{"select cast(NULL as varchar(5))", match(nil)},
 	{"select cast(123 as nvarchar(21))", match([]byte("123"))},
 	{"select cast('abcde' as nvarchar(3))", match([]byte("abc"))},
-	{"select cast('' as nvarchar(5))", match(nil)},
+	{"select cast('' as nvarchar(5))", match([]byte(""))},
 	{"select cast(NULL as nvarchar(5))", match(nil)},
 
 	// datetime, smalldatetime
@@ -570,36 +568,45 @@ var typeTests = []typeTest{
 
 	// string blobs
 	{"select cast('abc' as varchar(max))", match([]byte("abc"))},
+	{"select cast('' as varchar(max))", match([]byte(""))},
 	{fmt.Sprintf("select cast('%s' as varchar(max))", veryLongString), match([]byte(veryLongString))},
 	{"select cast(NULL as varchar(max))", match(nil)},
 	{"select cast('abc' as nvarchar(max))", match([]byte("abc"))},
+	{"select cast('' as nvarchar(max))", match([]byte(""))},
 	{fmt.Sprintf("select cast('%s' as nvarchar(max))", veryLongString), match([]byte(veryLongString))},
 	{"select cast(NULL as nvarchar(max))", match(nil)},
 	{"select cast('abc' as text)", match([]byte("abc"))},
+	{"select cast('' as text)", match([]byte(""))},
 	{fmt.Sprintf("select cast('%s' as text)", veryLongString), match([]byte(veryLongString))},
 	{"select cast(NULL as text)", match(nil)},
 	{"select cast('abc' as ntext)", match([]byte("abc"))},
+	{"select cast('' as ntext)", match([]byte(""))},
 	{fmt.Sprintf("select cast('%s' as ntext)", veryLongString), match([]byte(veryLongString))},
 	{"select cast(NULL as ntext)", match(nil)},
 
+	// xml
+	{"select cast(N'<root>hello</root>' as xml)", match([]byte("<root>hello</root>"))},
+	{"select cast(N'<root><doc><item1>dd</item1></doc></root>' as xml)", match([]byte("<root><doc><item1>dd</item1></doc></root>"))},
+
 	// binary blobs
 	{"select cast('abc' as binary(5))", match([]byte{'a', 'b', 'c', 0, 0})},
+	{"select cast('' as binary(5))", match([]byte{0, 0, 0, 0, 0})},
 	{"select cast(NULL as binary(5))", match(nil)},
 	{"select cast('abc' as varbinary(5))", match([]byte{'a', 'b', 'c'})},
+	{"select cast('' as varbinary(5))", match([]byte(""))},
 	{"select cast(NULL as varbinary(5))", match(nil)},
 	{"select cast('abc' as varbinary(max))", match([]byte{'a', 'b', 'c'})},
+	{"select cast('' as varbinary(max))", match([]byte(""))},
 	{fmt.Sprintf("select cast('%s' as varbinary(max))", veryLongString), match([]byte(veryLongString))},
 	{"select cast(NULL as varbinary(max))", match(nil)},
 }
 
-// TODO(brainman): see why typeWindowsSpecificTests do not work on linux
+// TODO(brainman): see why typeMSSpecificTests do not work on freetds
 
-var typeWindowsSpecificTests = []typeTest{
+var typeMSSpecificTests = []typeTest{
 	{"select cast(N'\u0421\u0430\u0448\u0430' as nvarchar(5))", match([]byte("\u0421\u0430\u0448\u0430"))},
 	{"select cast(N'\u0421\u0430\u0448\u0430' as nvarchar(max))", match([]byte("\u0421\u0430\u0448\u0430"))},
 	{"select cast(N'\u0421\u0430\u0448\u0430' as ntext)", match([]byte("\u0421\u0430\u0448\u0430"))},
-	{"select cast(N'<root>hello</root>' as xml)", match([]byte("<root>hello</root>"))},
-	{"select cast(N'<root><doc><item1>dd</item1></doc></root>' as xml)", match([]byte("<root><doc><item1>dd</item1></doc></root>"))},
 }
 
 var typeMSSQL2008Tests = []typeTest{
@@ -633,8 +640,8 @@ func TestMSSQLTypes(t *testing.T) {
 	defer closeDB(t, db, sc, sc)
 
 	tests := typeTests
-	if runtime.GOOS == "windows" {
-		tests = append(tests, typeWindowsSpecificTests...)
+	if !isFreeTDS() {
+		tests = append(tests, typeMSSpecificTests...)
 	}
 	if is2008OrLater(db) {
 		tests = append(tests, typeMSSQL2008Tests...)
@@ -1130,6 +1137,27 @@ func TestMSSQLTextColumnParam(t *testing.T) {
 	exec(t, db, "drop table dbo.temp")
 }
 
+func digestString(s string) string {
+	if len(s) < 40 {
+		return s
+	}
+	return fmt.Sprintf("%s ... (%d bytes long)", s[:40], len(s))
+}
+
+func digestBytes(b []byte) string {
+	if len(b) < 20 {
+		return fmt.Sprintf("%v", b)
+	}
+	s := ""
+	for _, v := range b[:20] {
+		if s != "" {
+			s += " "
+		}
+		s += fmt.Sprintf("%d", v)
+	}
+	return fmt.Sprintf("[%v ...] (%d bytes long)", s, len(b))
+}
+
 var paramTypeTests = []struct {
 	description string
 	sqlType     string
@@ -1141,10 +1169,30 @@ var paramTypeTests = []struct {
 	{"NULL for int", "int", nil},
 	// strings
 	{"non empty string", "varchar(10)", "abc"},
+	{"one character string", "varchar(10)", "a"},
 	{"empty string", "varchar(10)", ""},
-	{"large string value", "text", strings.Repeat("a", 10000)},
+	{"empty unicode string", "nvarchar(10)", ""},
+	{"3999 large unicode string", "nvarchar(max)", strings.Repeat("a", 3999)},
+	{"4000 large unicode string", "nvarchar(max)", strings.Repeat("a", 4000)},
+	{"4000 large non-ascii unicode string", "nvarchar(max)", strings.Repeat("\u0421", 4000)},
+	{"4001 large unicode string", "nvarchar(max)", strings.Repeat("a", 4001)},
+	{"4001 large non-ascii unicode string", "nvarchar(max)", strings.Repeat("\u0421", 4001)},
+	{"10000 large unicode string", "nvarchar(max)", strings.Repeat("a", 10000)},
+	{"empty unicode null string", "nvarchar(10) null", ""},
+	{"3999 large string value", "text", strings.Repeat("a", 3999)},
+	{"4000 large string value", "text", strings.Repeat("a", 4000)},
+	{"4000 large unicode string value", "ntext", strings.Repeat("\u0421", 4000)},
+	{"4001 large string value", "text", strings.Repeat("a", 4001)},
+	{"4001 large unicode string value", "ntext", strings.Repeat("\u0421", 4001)},
+	{"very large string value", "text", strings.Repeat("a", 10000)},
 	// datetime
-	{"datetime overflow", "datetime", time.Date(2013, 9, 9, 14, 07, 15, 123e6, time.UTC)},
+	{"datetime overflow", "datetime", time.Date(2013, 9, 9, 14, 07, 15, 123e6, time.Local)},
+	// binary blobs
+	{"small blob", "varbinary", make([]byte, 1)},
+	{"7999 large image", "image", make([]byte, 7999)},
+	{"8000 large image", "image", make([]byte, 8000)},
+	{"8001 large image", "image", make([]byte, 8001)},
+	{"very large image", "image", make([]byte, 10000)},
 }
 
 func TestMSSQLTextColumnParamTypes(t *testing.T) {
@@ -1159,7 +1207,34 @@ func TestMSSQLTextColumnParamTypes(t *testing.T) {
 		exec(t, db, fmt.Sprintf("create table dbo.temp(v %s)", test.sqlType))
 		_, err = db.Exec("insert into dbo.temp(v) values(?)", test.value)
 		if err != nil {
-			t.Errorf("%s test failed: %s", test.description, err)
+			t.Errorf("%s insert test failed: %s", test.description, err)
+		}
+		var v interface{}
+		err = db.QueryRow("select v from dbo.temp").Scan(&v)
+		if err != nil {
+			t.Errorf("%s select test failed: %s", test.description, err)
+			continue
+		}
+		switch want := test.value.(type) {
+		case string:
+			have := string(v.([]byte))
+			if have != want {
+				t.Errorf("%s wrong return value: have %q; want %q", test.description, digestString(have), digestString(want))
+			}
+		case []byte:
+			have := v.([]byte)
+			if !equal(have, want) {
+				t.Errorf("%s wrong return value: have %v; want %v", test.description, digestBytes(have), digestBytes(want))
+			}
+		case time.Time:
+			have := v.(time.Time)
+			if have != want {
+				t.Errorf("%s wrong return value: have %v; want %v", test.description, have, want)
+			}
+		case nil:
+			if v != nil {
+				t.Errorf("%s wrong return value: have %v; want nil", test.description, v)
+			}
 		}
 	}
 	exec(t, db, "drop table dbo.temp")
@@ -1219,4 +1294,55 @@ func TestMSSQLUTF16ToUTF8(t *testing.T) {
 	if api.UTF16ToString(s) != string(utf16toutf8(s)) {
 		t.Fatal("comparison fails")
 	}
+}
+
+func TestMSSQLExecStoredProcedure(t *testing.T) {
+	db, sc, err := mssqlConnect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeDB(t, db, sc, sc)
+
+	db.Exec("drop procedure dbo.temp")
+	exec(t, db, `
+create procedure dbo.temp
+	@a	int,
+	@b	int
+as
+begin
+	return @a + @b
+end
+`)
+	qry := `
+declare @ret int
+exec @ret = dbo.temp @a = ?, @b = ?
+select @ret
+`
+	var ret int64
+	if err := db.QueryRow(qry, 2, 3).Scan(&ret); err != nil {
+		t.Fatal(err)
+	}
+	if ret != 5 {
+		t.Fatalf("unexpected return value: should=5, is=%v", ret)
+	}
+	exec(t, db, `drop procedure dbo.temp`)
+}
+
+func TestMSSQLSingleCharParam(t *testing.T) {
+	db, sc, err := mssqlConnect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeDB(t, db, sc, sc)
+
+	db.Exec("drop table dbo.temp")
+	exec(t, db, `create table dbo.temp(name nvarchar(50), age int)`)
+
+	rows, err := db.Query("select age from dbo.temp where name=?", "v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	exec(t, db, "drop table dbo.temp")
 }

@@ -4,8 +4,13 @@
 
 package api
 
+import (
+	"syscall"
+	"unsafe"
+)
+
 const (
-	SQL_OV_ODBC3 = 3
+	SQL_OV_ODBC3 = uintptr(3)
 
 	SQL_ATTR_ODBC_VERSION = 200
 
@@ -98,10 +103,10 @@ const (
 	SQL_ATTR_CP_MATCH           = 202
 	SQL_CP_OFF                  = 0
 	SQL_CP_ONE_PER_DRIVER       = 1
-	SQL_CP_ONE_PER_HENV         = 2
+	SQL_CP_ONE_PER_HENV         = uintptr(2)
 	SQL_CP_DEFAULT              = SQL_CP_OFF
 	SQL_CP_STRICT_MATCH         = 0
-	SQL_CP_RELAXED_MATCH        = 1
+	SQL_CP_RELAXED_MATCH        = uintptr(1)
 )
 
 type (
@@ -117,7 +122,7 @@ type (
 	SQLUSMALLINT uint16
 	SQLINTEGER   int32
 	SQLUINTEGER  uint32
-	SQLPOINTER   uintptr
+	SQLPOINTER   unsafe.Pointer
 	SQLRETURN    SQLSMALLINT
 
 	SQLGUID struct {
@@ -127,3 +132,15 @@ type (
 		Data4 [8]byte
 	}
 )
+
+func SQLSetEnvUIntPtrAttr(environmentHandle SQLHENV, attribute SQLINTEGER, valuePtr uintptr, stringLength SQLINTEGER) (ret SQLRETURN) {
+	r0, _, _ := syscall.Syscall6(procSQLSetEnvAttr.Addr(), 4, uintptr(environmentHandle), uintptr(attribute), uintptr(valuePtr), uintptr(stringLength), 0, 0)
+	ret = SQLRETURN(r0)
+	return
+}
+
+func SQLSetConnectUIntPtrAttr(connectionHandle SQLHDBC, attribute SQLINTEGER, valuePtr uintptr, stringLength SQLINTEGER) (ret SQLRETURN) {
+	r0, _, _ := syscall.Syscall6(procSQLSetConnectAttrW.Addr(), 4, uintptr(connectionHandle), uintptr(attribute), uintptr(valuePtr), uintptr(stringLength), 0, 0)
+	ret = SQLRETURN(r0)
+	return
+}

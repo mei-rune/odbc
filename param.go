@@ -5,12 +5,12 @@
 package odbc
 
 import (
-	"code.google.com/p/odbc/api"
 	"database/sql/driver"
 	"fmt"
-	"runtime"
 	"time"
 	"unsafe"
+
+	"code.google.com/p/odbc/api"
 )
 
 type Parameter struct {
@@ -64,10 +64,14 @@ func (p *Parameter) BindValue(h api.SQLHSTMT, idx int, v driver.Value) error {
 		l *= 2 // every char takes 2 bytes
 		buflen = api.SQLLEN(l)
 		plen = p.StoreStrLen_or_IndPtr(buflen)
-		if p.isDescribed {
-			// only so we can handle very long (>4000 chars) parameters
+		switch {
+		case size >= 4000:
+			sqltype = api.SQL_WLONGVARCHAR
+		case p.isDescribed:
 			sqltype = p.SQLType
-		} else {
+		case size <= 1:
+			sqltype = api.SQL_WVARCHAR
+		default:
 			sqltype = api.SQL_WCHAR
 		}
 	case int64:
@@ -118,15 +122,34 @@ func (p *Parameter) BindValue(h api.SQLHSTMT, idx int, v driver.Value) error {
 
 		size = 20 + api.SQLULEN(decimal)
 	case []byte:
-		ctype = api.SQL_C_BINARY
-		b := make([]byte, len(d))
-		copy(b, d)
-		p.Data = b
-		buf = unsafe.Pointer(&b[0])
-		buflen = api.SQLLEN(len(b))
-		plen = p.StoreStrLen_or_IndPtr(buflen)
-		size = api.SQLULEN(len(b))
-		sqltype = api.SQL_BINARY
+		if nil == d {
+			ctype = api.SQL_C_WCHAR
+			p.Data = nil
+			buf = nil
+			size = 1
+			buflen = 0
+			plen = p.StoreStrLen_or_IndPtr(api.SQL_NULL_DATA)
+			sqltype = api.SQL_WCHAR
+		} else {
+			ctype = api.SQL_C_BINARY
+			b := make([]byte, len(d))
+			copy(b, d)
+			p.Data = b
+			buf = unsafe.Pointer(&b[0])
+			buflen = api.SQLLEN(len(b))
+			plen = p.StoreStrLen_or_IndPtr(buflen)
+			size = api.SQLULEN(len(b))
+			switch {
+			case p.isDescribed:
+				sqltype = p.SQLType
+			case size <= 0:
+				sqltype = api.SQL_LONGVARBINARY
+			case size >= 8000:
+				sqltype = api.SQL_LONGVARBINARY
+			default:
+				sqltype = api.SQL_BINARY
+			}
+		}
 	default:
 		panic(fmt.Errorf("unsupported type %T", v))
 	}
@@ -152,18 +175,17 @@ func ExtractParameters(h api.SQLHSTMT) ([]Parameter, error) {
 	}
 	ps := make([]Parameter, n)
 	// fetch param descriptions
-	if runtime.GOOS == "windows" {
-		// SQLDescribeParam is not implemented by freedts
-		for i := range ps {
-			p := &ps[i]
-			ret = api.SQLDescribeParam(h, api.SQLUSMALLINT(i+1),
-				&p.SQLType, &p.Size, &p.Decimal, &nullable)
-			if IsError(ret) {
-				// will try request without these descriptions
-				continue
-			}
-			p.isDescribed = true
+	for i := range ps {
+		p := &ps[i]
+		ret = api.SQLDescribeParam(h, api.SQLUSMALLINT(i+1),
+			&p.SQLType, &p.Size, &p.Decimal, &nullable)
+		if IsError(ret) {
+			// SQLDescribeParam is not implemented by freedts,
+			// it even fails for some statements on windows.
+			// Will try request without these descriptions
+			continue
 		}
+		p.isDescribed = true
 	}
 	return ps, nil
 }

@@ -131,7 +131,7 @@ func (c *BaseColumn) Value(buf []byte) (driver.Value, error) {
 		return buf, nil
 	case api.SQL_C_WCHAR:
 		if p == nil {
-			return nil, nil
+			return buf, nil
 		}
 		s := (*[1 << 20]uint16)(p)[:len(buf)/2]
 		return utf16toutf8(s), nil
@@ -139,7 +139,7 @@ func (c *BaseColumn) Value(buf []byte) (driver.Value, error) {
 		t := (*api.SQL_TIMESTAMP_STRUCT)(p)
 		r := time.Date(int(t.Year), time.Month(t.Month), int(t.Day),
 			int(t.Hour), int(t.Minute), int(t.Second), int(t.Fraction),
-			time.UTC)
+			time.Local)
 		return r, nil
 	case api.SQL_C_GUID:
 		t := (*api.SQLGUID)(p)
@@ -156,7 +156,7 @@ func (c *BaseColumn) Value(buf []byte) (driver.Value, error) {
 	case api.SQL_C_DATE:
 		t := (*api.SQL_DATE_STRUCT)(p)
 		r := time.Date(int(t.Year), time.Month(t.Month), int(t.Day),
-			0, 0, 0, 0, time.UTC)
+			0, 0, 0, 0, time.Local)
 		return r, nil
 	case api.SQL_C_BINARY:
 		return buf, nil
@@ -192,7 +192,7 @@ func NewBindableColumn(b *BaseColumn, ctype api.SQLSMALLINT, bufSize int) *Binda
 }
 
 func NewVariableWidthColumn(b *BaseColumn, ctype api.SQLSMALLINT, colWidth api.SQLULEN) Column {
-	if colWidth == 0 {
+	if colWidth == 0 || colWidth > 1024 {
 		b.CType = ctype
 		return &NonBindableColumn{b}
 	}
@@ -262,6 +262,9 @@ loop:
 			if l.IsNull() {
 				// is NULL
 				return nil, nil
+			}
+			if int(l) > len(b) {
+				return nil, fmt.Errorf("too much data returned: %d bytes returned, but buffer size is %d", l, cap(b))
 			}
 			total = append(total, b[:l]...)
 			break loop

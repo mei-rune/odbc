@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"code.google.com/p/odbc/api"
+	"github.com/runner-mei/odbc/api"
 )
 
 var (
@@ -42,10 +42,10 @@ func isFreeTDS() bool {
 
 func mssqlConnect() (db *sql.DB, stmtCount int, err error) {
 	params := map[string]string{
-			"driver":   *msdriver,
-			"server":   *mssrv,
-			"database": *msdb,
-		}
+		"driver":   *msdriver,
+		"server":   *mssrv,
+		"database": *msdb,
+	}
 	if isFreeTDS() {
 		params["uid"] = *msuser
 		params["pwd"] = *mspass

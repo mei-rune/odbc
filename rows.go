@@ -5,9 +5,10 @@
 package odbc
 
 import (
-	"code.google.com/p/odbc/api"
 	"database/sql/driver"
 	"io"
+
+	"github.com/runner-mei/odbc/api"
 )
 
 type Rows struct {

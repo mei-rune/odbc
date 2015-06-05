@@ -5,9 +5,10 @@
 package odbc
 
 import (
-	"code.google.com/p/odbc/api"
 	"fmt"
 	"sync"
+
+	"github.com/runner-mei/odbc/api"
 )
 
 type Stats struct {

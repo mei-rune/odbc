@@ -10,7 +10,7 @@ import (
 	"time"
 	"unsafe"
 
-	"code.google.com/p/odbc/api"
+	"github.com/runner-mei/odbc/api"
 )
 
 type Parameter struct {

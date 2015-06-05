@@ -5,10 +5,11 @@
 package odbc
 
 import (
-	"code.google.com/p/odbc/api"
 	"fmt"
 	"strings"
 	"unsafe"
+
+	"github.com/runner-mei/odbc/api"
 )
 
 func IsError(ret api.SQLRETURN) bool {

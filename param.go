@@ -119,7 +119,6 @@ func (p *Parameter) BindValue(h api.SQLHSTMT, idx int, v driver.Value) error {
 			decimal = 3
 			b.Fraction = api.SQLUINTEGER(d.Nanosecond() / int(time.Millisecond))
 		}
-
 		size = 20 + api.SQLULEN(decimal)
 	case []byte:
 		if nil == d {

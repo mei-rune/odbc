@@ -5,13 +5,18 @@
 package odbc
 
 import (
+	"bytes"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"net"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -40,8 +45,10 @@ func isFreeTDS() bool {
 	return *msdriver == "freetds"
 }
 
-func mssqlConnect() (db *sql.DB, stmtCount int, err error) {
-	params := map[string]string{
+type connParams map[string]string
+
+func newConnParams() connParams {
+	params := connParams{
 		"driver":   *msdriver,
 		"server":   *mssrv,
 		"database": *msdb,
@@ -60,15 +67,59 @@ func mssqlConnect() (db *sql.DB, stmtCount int, err error) {
 			params["pwd"] = *mspass
 		}
 	}
+	a := strings.SplitN(params["server"], ",", -1)
+	if len(a) == 2 {
+		params["server"] = a[0]
+		params["port"] = a[1]
+	}
+	return params
+}
+
+func (params connParams) getConnAddress() (string, error) {
+	port, ok := params["port"]
+	if !ok {
+		return "", errors.New("no port number provided.")
+	}
+	host, ok := params["server"]
+	if !ok {
+		return "", errors.New("no host name provided.")
+	}
+	return host + ":" + port, nil
+}
+
+func (params connParams) updateConnAddress(address string) error {
+	a := strings.SplitN(address, ":", -1)
+	if len(a) != 2 {
+		fmt.Errorf("listen address must have 2 fields, but %d found", len(a))
+	}
+	params["server"] = a[0]
+	params["port"] = a[1]
+	return nil
+}
+
+func (params connParams) makeODBCConnectionString() string {
+	if port, ok := params["port"]; ok {
+		params["server"] += "," + port
+		delete(params, "port")
+	}
 	var c string
 	for n, v := range params {
 		c += n + "=" + v + ";"
 	}
-	db, err = sql.Open("odbc", c)
+	return c
+}
+
+func mssqlConnectWithParams(params connParams) (db *sql.DB, stmtCount int, err error) {
+	db, err = sql.Open("odbc", params.makeODBCConnectionString())
 	if err != nil {
 		return nil, 0, err
 	}
-	return db, db.Driver().(*Driver).Stats.StmtCount, nil
+	stats := db.Driver().(*Driver).Stats
+	return db, stats.StmtCount, nil
+}
+
+func mssqlConnect() (db *sql.DB, stmtCount int, err error) {
+	return mssqlConnectWithParams(newConnParams())
 }
 
 func closeDB(t *testing.T, db *sql.DB, shouldStmtCount, ignoreIfStmtCount int) {
@@ -169,23 +220,8 @@ func is2008OrLater(db *sql.DB) bool {
 	return true
 }
 
-func equal(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	if a == nil {
-		return true
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func exec(t *testing.T, db *sql.DB, query string) {
-	// TODO(brainman): make sure http://code.google.com/p/go/issues/detail?id=3678 is fixed
+	// TODO(brainman): make sure https://github.com/golang/go/issues/3678 is fixed
 	//r, err := db.Exec(query, a...)
 	s, err := db.Prepare(query)
 	if err != nil {
@@ -199,6 +235,33 @@ func exec(t *testing.T, db *sql.DB, query string) {
 	_, err = r.RowsAffected()
 	if err != nil {
 		t.Fatalf("r.RowsAffected(%q ...) failed: %v", query, err)
+	}
+}
+
+func driverExec(t *testing.T, dc driver.Conn, query string) {
+	st, err := dc.Prepare(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil && t != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	r, err := st.Exec([]driver.Value{})
+	if err != nil {
+		if t != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	_, err = r.RowsAffected()
+	if err != nil {
+		if t != nil {
+			t.Fatalf("r.RowsAffected(%q ...) failed: %v", query, err)
+		}
+		return
 	}
 }
 
@@ -312,7 +375,7 @@ func TestMSSQLCreateInsertDelete(t *testing.T) {
 			t.Errorf("I did not know, that %s's date of birth is %v (%v expected)", name, is.dob, want.dob)
 			continue
 		}
-		if !equal(is.data, want.data) {
+		if !bytes.Equal(is.data, want.data) {
 			t.Errorf("I did not know, that %s's data is %v (%v expected)", name, is.data, want.data)
 			continue
 		}
@@ -477,7 +540,7 @@ func match(a interface{}) matchFunc {
 			if !ok {
 				return fmt.Errorf("couldn't convert expected value %v(%T) to %T", a, a, got)
 			}
-			if !equal(got, expect) {
+			if !bytes.Equal(got, expect) {
 				return fmt.Errorf("expect %v, but got %v", expect, got)
 			}
 		case time.Time:
@@ -772,7 +835,7 @@ func TestMSSQLStmtAndRows(t *testing.T) {
 		defer r.Close()
 
 		// TODO(brainman): dangling statement(s) bug reported
-		// http://code.google.com/p/go/issues/detail?id=3865
+		// https://github.com/golang/go/issues/3865
 		err = s.Close()
 		if err != nil {
 			t.Fatal(err)
@@ -801,7 +864,7 @@ func TestMSSQLStmtAndRows(t *testing.T) {
 		t.Fatalf("invalid statement count: expected %v, is %v", sc, db.Driver().(*Driver).Stats.StmtCount)
 	}
 
-	// no reource tracking past this point
+	// no resource tracking past this point
 
 	func() {
 		// test 1 Stmt and many Query's executed one after the other
@@ -901,6 +964,8 @@ func TestMSSQLIssue5(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	const nworkers = 8
 	defer closeDB(t, db, sc, sc)
 
 	db.Exec("drop table dbo.temp")
@@ -939,7 +1004,6 @@ func TestMSSQLIssue5(t *testing.T) {
 		return
 	}
 
-	const nworkers = 8
 	waitch := make(chan struct{})
 	errch := make(chan error, nworkers)
 	for i := 0; i < nworkers; i++ {
@@ -993,7 +1057,7 @@ func TestMSSQLDeleteNonExistent(t *testing.T) {
 	exec(t, db, "drop table dbo.temp")
 }
 
-// https://code.google.com/p/odbc/issues/detail?id=14
+// https://github.com/alexbrainman/odbc/issues/14
 func TestMSSQLDatetime2Param(t *testing.T) {
 	db, sc, err := mssqlConnect()
 	if err != nil {
@@ -1025,7 +1089,7 @@ func TestMSSQLDatetime2Param(t *testing.T) {
 	exec(t, db, "drop table dbo.temp")
 }
 
-// https://code.google.com/p/odbc/issues/detail?id=19
+// https://github.com/alexbrainman/odbc/issues/19
 func TestMSSQLMerge(t *testing.T) {
 	db, sc, err := mssqlConnect()
 	if err != nil {
@@ -1091,7 +1155,7 @@ func TestMSSQLMerge(t *testing.T) {
 	exec(t, db, "drop table dbo.temp")
 }
 
-// https://code.google.com/p/odbc/issues/detail?id=20
+// https://github.com/alexbrainman/odbc/issues/20
 func TestMSSQLSelectInt(t *testing.T) {
 	db, sc, err := mssqlConnect()
 	if err != nil {
@@ -1109,7 +1173,7 @@ func TestMSSQLSelectInt(t *testing.T) {
 	}
 }
 
-// https://code.google.com/p/odbc/issues/detail?id=21
+// https://github.com/alexbrainman/odbc/issues/21
 func TestMSSQLTextColumnParam(t *testing.T) {
 	db, sc, err := mssqlConnect()
 	if err != nil {
@@ -1223,7 +1287,7 @@ func TestMSSQLTextColumnParamTypes(t *testing.T) {
 			}
 		case []byte:
 			have := v.([]byte)
-			if !equal(have, want) {
+			if !bytes.Equal(have, want) {
 				t.Errorf("%s wrong return value: have %v; want %v", test.description, digestBytes(have), digestBytes(want))
 			}
 		case time.Time:
@@ -1288,7 +1352,7 @@ func TestMSSQLRawBytes(t *testing.T) {
 	exec(t, db, "drop table dbo.temp")
 }
 
-// https://code.google.com/p/odbc/issues/detail?id=27
+// https://github.com/alexbrainman/odbc/issues/27
 func TestMSSQLUTF16ToUTF8(t *testing.T) {
 	s := []uint16{0x47, 0x75, 0x73, 0x74, 0x61, 0x66, 0x27, 0x73, 0x20, 0x4b, 0x6e, 0xe4, 0x63, 0x6b, 0x65, 0x62, 0x72, 0xf6, 0x64}
 	if api.UTF16ToString(s) != string(utf16toutf8(s)) {
@@ -1342,7 +1406,316 @@ func TestMSSQLSingleCharParam(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	rows.Close()
 
 	exec(t, db, "drop table dbo.temp")
+}
+
+type tcpProxy struct {
+	mu      sync.Mutex
+	stopped bool
+	conns   []net.Conn
+}
+
+func (p *tcpProxy) run(ln net.Listener, remote string) {
+	for {
+		defer p.pause()
+		c1, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go func(c1 net.Conn) {
+			defer c1.Close()
+
+			if p.paused() {
+				return
+			}
+
+			p.addConn(c1)
+
+			c2, err := net.Dial("tcp", remote)
+			if err != nil {
+				panic(err)
+			}
+			p.addConn(c2)
+			defer c2.Close()
+
+			go func() {
+				io.Copy(c2, c1)
+			}()
+			io.Copy(c1, c2)
+		}(c1)
+	}
+}
+
+func (p *tcpProxy) pause() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stopped = true
+	for _, c := range p.conns {
+		c.Close()
+	}
+	p.conns = p.conns[:0]
+}
+
+func (p *tcpProxy) paused() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stopped
+}
+
+func (p *tcpProxy) addConn(c net.Conn) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.conns = append(p.conns, c)
+}
+
+func (p *tcpProxy) restart() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stopped = false
+}
+
+func TestMSSQLReconnect(t *testing.T) {
+	params := newConnParams()
+	address, err := params.getConnAddress()
+	if err != nil {
+		t.Skipf("Skipping test: %v", err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	err = params.updateConnAddress(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proxy := new(tcpProxy)
+	go proxy.run(ln, address)
+
+	db, sc, err := mssqlConnectWithParams(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeDB(t, db, sc, sc)
+
+	testConn := func() error {
+		var n int64
+		err := db.QueryRow("select count(*) from dbo.temp").Scan(&n)
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return fmt.Errorf("unexpected return value: should=1, is=%v", n)
+		}
+		return nil
+	}
+
+	db.Exec("drop table dbo.temp")
+	exec(t, db, `create table dbo.temp (name varchar(50))`)
+	exec(t, db, `insert into dbo.temp (name) values ('alex')`)
+
+	err = testConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proxy.pause()
+	time.Sleep(100 * time.Millisecond)
+
+	err = testConn()
+	if err == nil {
+		t.Fatal("database IO should fail, but succeeded")
+	}
+
+	proxy.restart()
+
+	err = testConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec(t, db, "drop table dbo.temp")
+}
+
+func TestMSSQLMarkTxBadConn(t *testing.T) {
+	params := newConnParams()
+
+	address, err := params.getConnAddress()
+	if err != nil {
+		t.Skipf("Skipping test: %v", err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	err = params.updateConnAddress(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proxy := new(tcpProxy)
+	go proxy.run(ln, address)
+
+	testFn := func(endTx func(driver.Tx) error, nextFn func(driver.Conn) error) {
+		proxy.restart()
+
+		cc, sc := drv.Stats.ConnCount, drv.Stats.StmtCount
+		defer func() {
+			if should, is := sc, drv.Stats.StmtCount; should != is {
+				t.Errorf("leaked statement, should=%d, is=%d", should, is)
+			}
+			if should, is := cc, drv.Stats.ConnCount; should != is {
+				t.Errorf("leaked connection, should=%d, is=%d", should, is)
+			}
+		}()
+
+		dc, err := drv.Open(params.makeODBCConnectionString())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := dc.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}()
+
+		driverExec(nil, dc, "drop table dbo.temp")
+		driverExec(t, dc, `create table dbo.temp (name varchar(50))`)
+
+		tx, err := dc.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		driverExec(t, dc, `insert into dbo.temp (name) values ('alex')`)
+
+		proxy.pause()
+		time.Sleep(100 * time.Millisecond)
+
+		// the connection is broken, ending the transaction should fail
+		if err := endTx(tx); err == nil {
+			t.Fatal("unexpected success, expected error")
+		}
+
+		// database/sql might return the broken driver.Conn to the pool in
+		// that case the next operation must fail.
+		if err := nextFn(dc); err == nil {
+			t.Fatal("unexpected success, expected error")
+		}
+	}
+
+	beginFn := func(dc driver.Conn) error {
+		tx, err := dc.Begin()
+		if err != nil {
+			return err
+		}
+		tx.Rollback()
+		return nil
+	}
+
+	prepareFn := func(dc driver.Conn) error {
+		st, err := dc.Prepare(`insert into dbo.temp (name) values ('alex')`)
+		if err != nil {
+			return err
+		}
+		st.Close()
+		return nil
+	}
+
+	// Test all the permutations.
+	for _, endTx := range []func(driver.Tx) error{
+		driver.Tx.Commit,
+		driver.Tx.Rollback,
+	} {
+		for _, nextFn := range []func(driver.Conn) error{
+			beginFn,
+			prepareFn,
+		} {
+			testFn(endTx, nextFn)
+		}
+	}
+}
+
+func TestMSSQLMarkBeginBadConn(t *testing.T) {
+	params := newConnParams()
+
+	testFn := func(label string, nextFn func(driver.Conn) error) {
+		cc, sc := drv.Stats.ConnCount, drv.Stats.StmtCount
+		defer func() {
+			if should, is := sc, drv.Stats.StmtCount; should != is {
+				t.Errorf("leaked statement, should=%d, is=%d", should, is)
+			}
+			if should, is := cc, drv.Stats.ConnCount; should != is {
+				t.Errorf("leaked connection, should=%d, is=%d", should, is)
+			}
+		}()
+
+		dc, err := drv.Open(params.makeODBCConnectionString())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := dc.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}()
+
+		driverExec(nil, dc, "drop table dbo.temp")
+		driverExec(t, dc, `create table dbo.temp (name varchar(50))`)
+
+		// force an error starting a transaction
+		func() {
+			testBeginErr = errors.New("cannot start tx")
+			defer func() { testBeginErr = nil }()
+
+			if _, err := dc.Begin(); err == nil {
+				t.Fatal("unexpected success, expected error")
+			}
+		}()
+
+		// database/sql might return the broken driver.Conn to the pool. The
+		// next operation on the driver connection must return
+		// driver.ErrBadConn to prevent the bad connection from getting used
+		// again.
+		if should, is := driver.ErrBadConn, nextFn(dc); should != is {
+			t.Errorf("%s: should=\"%v\", is=\"%v\"", label, should, is)
+		}
+	}
+
+	beginFn := func(dc driver.Conn) error {
+		tx, err := dc.Begin()
+		if err != nil {
+			return err
+		}
+		tx.Rollback()
+		return nil
+	}
+
+	prepareFn := func(dc driver.Conn) error {
+		st, err := dc.Prepare(`insert into dbo.temp (name) values ('alex')`)
+		if err != nil {
+			return err
+		}
+		st.Close()
+		return nil
+	}
+
+	// Test all the permutations.
+	for _, next := range []struct {
+		label string
+		fn    func(driver.Conn) error
+	}{
+		{"begin", beginFn},
+		{"prepare", prepareFn},
+	} {
+		testFn(next.label, next.fn)
+	}
 }

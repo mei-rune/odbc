@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 # Copyright 2012 The Go Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style
 # license that can be found in the LICENSE file.
@@ -114,16 +114,27 @@ print <<EOF;
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+<<<<<<< HEAD
 // +build darwin linux
+=======
+// +build darwin linux freebsd
+>>>>>>> alex/master
 // +build cgo
 
 package $package
 
 import "unsafe"
 
+<<<<<<< HEAD
 // #cgo darwin LDFLAGS: -lodbc -L/opt/local/lib
 // #cgo darwin CFLAGS: -I/opt/local/include
 // #cgo linux LDFLAGS: -lodbc
+=======
+// #cgo darwin LDFLAGS: -lodbc
+// #cgo linux LDFLAGS: -lodbc
+// #cgo freebsd LDFLAGS: -L /usr/local/lib -lodbc
+// #cgo freebsd CFLAGS: -I/usr/local/include
+>>>>>>> alex/master
 // #include <sql.h>
 // #include <sqlext.h>
 import "C"

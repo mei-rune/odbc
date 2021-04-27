@@ -6,18 +6,26 @@ package odbc
 
 import (
 	"database/sql/driver"
+	"strings"
 	"unsafe"
 
 	"github.com/runner-mei/odbc/api"
 )
 
 type Conn struct {
-	h  api.SQLHDBC
-	tx *Tx
-	bad bool
+	h                api.SQLHDBC
+	tx               *Tx
+	bad              bool
+	isMSAccessDriver bool
 }
 
+var accessDriverSubstr = strings.ToUpper(strings.Replace("DRIVER={Microsoft Access Driver", " ", "", -1))
+
 func (d *Driver) Open(dsn string) (driver.Conn, error) {
+	if d.initErr != nil {
+		return nil, d.initErr
+	}
+
 	var out api.SQLHANDLE
 	ret := api.SQLAllocHandle(api.SQL_HANDLE_DBC, api.SQLHANDLE(d.h), &out)
 	if IsError(ret) {
@@ -34,7 +42,8 @@ func (d *Driver) Open(dsn string) (driver.Conn, error) {
 		defer releaseHandle(h)
 		return nil, NewError("SQLDriverConnect", h)
 	}
-	return &Conn{h: h}, nil
+	isAccess := strings.Contains(strings.ToUpper(strings.Replace(dsn, " ", "", -1)), accessDriverSubstr)
+	return &Conn{h: h, isMSAccessDriver: isAccess}, nil
 }
 
 func (c *Conn) Close() (err error) {

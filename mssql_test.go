@@ -287,7 +287,7 @@ func TestMSSQLCreateInsertDelete(t *testing.T) {
 			age:       5,
 			isGirl:    true,
 			weight:    15.5,
-			dob:       time.Date(2000, 5, 10, 11, 1, 1, 0, time.Local),
+			dob:       time.Date(2000, 5, 10, 11, 1, 1, 0, TimeZone),
 			data:      []byte{0x0, 0x0, 0xb, 0xad, 0xc0, 0xde},
 			canBeNull: sql.NullString{"aa", true},
 		},
@@ -295,7 +295,7 @@ func TestMSSQLCreateInsertDelete(t *testing.T) {
 			age:       3,
 			isGirl:    false,
 			weight:    26.12,
-			dob:       time.Date(2009, 5, 10, 11, 1, 1, 123e6, time.Local),
+			dob:       time.Date(2009, 5, 10, 11, 1, 1, 123e6, TimeZone),
 			data:      []byte{0x0},
 			canBeNull: sql.NullString{"bbb", true},
 		},
@@ -316,11 +316,11 @@ func TestMSSQLCreateInsertDelete(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		_, err = s.Exec("chris", 25, 0, 50, time.Date(2015, 12, 25, 0, 0, 0, 0, time.Local), "ccc", nil)
+		_, err = s.Exec("chris", 25, 0, 50, time.Date(2015, 12, 25, 0, 0, 0, 0, TimeZone), "ccc", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = s.Exec("null", 0, 0, 0, time.Date(2015, 12, 25, 1, 2, 3, 0, time.Local), nil, nil)
+		_, err = s.Exec("null", 0, 0, 0, time.Date(2015, 12, 25, 1, 2, 3, 0, TimeZone), nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -622,10 +622,10 @@ var typeTests = []typeTest{
 	{"select cast(NULL as nvarchar(5))", match(nil)},
 
 	// datetime, smalldatetime
-	{"select cast('20151225' as datetime)", match(time.Date(2015, 12, 25, 0, 0, 0, 0, time.Local))},
-	{"select cast('2007-05-08 12:35:29.123' as datetime)", match(time.Date(2007, 5, 8, 12, 35, 29, 123e6, time.Local))},
+	{"select cast('20151225' as datetime)", match(time.Date(2015, 12, 25, 0, 0, 0, 0, TimeZone))},
+	{"select cast('2007-05-08 12:35:29.123' as datetime)", match(time.Date(2007, 5, 8, 12, 35, 29, 123e6, TimeZone))},
 	{"select cast(NULL as datetime)", match(nil)},
-	{"select cast('2007-05-08 12:35:29.123' as smalldatetime)", match(time.Date(2007, 5, 8, 12, 35, 0, 0, time.Local))},
+	{"select cast('2007-05-08 12:35:29.123' as smalldatetime)", match(time.Date(2007, 5, 8, 12, 35, 0, 0, TimeZone))},
 
 	// uniqueidentifier
 	{"select cast('0e984725-c51c-4bf4-9960-e1c80e27aba0' as uniqueidentifier)", match("0e984725-c51c-4bf4-9960-e1c80e27aba0")},
@@ -676,12 +676,12 @@ var typeMSSpecificTests = []typeTest{
 
 var typeMSSQL2008Tests = []typeTest{
 	// datetime2
-	{"select cast('20151225' as datetime2)", match(time.Date(2015, 12, 25, 0, 0, 0, 0, time.Local))},
-	{"select cast('2007-05-08 12:35:29.1234567' as datetime2)", match(time.Date(2007, 5, 8, 12, 35, 29, 1234567e2, time.Local))},
+	{"select cast('20151225' as datetime2)", match(time.Date(2015, 12, 25, 0, 0, 0, 0, TimeZone))},
+	{"select cast('2007-05-08 12:35:29.1234567' as datetime2)", match(time.Date(2007, 5, 8, 12, 35, 29, 1234567e2, TimeZone))},
 	{"select cast(NULL as datetime2)", match(nil)},
 
 	// time(7)
-	{"select cast('12:35:29.1234567' as time(7))", match(time.Date(1, 1, 1, 12, 35, 29, 1234567e2, time.Local))},
+	{"select cast('12:35:29.1234567' as time(7))", match(time.Date(1, 1, 1, 12, 35, 29, 1234567e2, TimeZone))},
 	{"select cast(NULL as time(7))", match(nil)},
 }
 
@@ -1080,7 +1080,7 @@ func TestMSSQLDatetime2Param(t *testing.T) {
 	db.Exec("drop table dbo.temp")
 	exec(t, db, "create table dbo.temp (dt datetime2)")
 
-	expect := time.Date(2007, 5, 8, 12, 35, 29, 1234567e2, time.Local)
+	expect := time.Date(2007, 5, 8, 12, 35, 29, 1234567e2, TimeZone)
 	_, err = db.Exec("insert into dbo.temp (dt) values (?)", expect)
 	if err != nil {
 		t.Fatal(err)
@@ -1258,7 +1258,7 @@ var paramTypeTests = []struct {
 	{"4001 large unicode string value", "ntext", strings.Repeat("\u0421", 4001)},
 	{"very large string value", "text", strings.Repeat("a", 10000)},
 	// datetime
-	{"datetime overflow", "datetime", time.Date(2013, 9, 9, 14, 07, 15, 123e6, time.Local)},
+	{"datetime overflow", "datetime", time.Date(2013, 9, 9, 14, 07, 15, 123e6, TimeZone)},
 	// binary blobs
 	{"small blob", "varbinary", make([]byte, 1)},
 	{"very large blob", "varbinary(max)", make([]byte, 100000)},

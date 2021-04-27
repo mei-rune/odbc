@@ -42,7 +42,7 @@ func TestMYSQLTime(t *testing.T) {
 	exec(t, db, "create table temp(id int not null auto_increment primary key, time time)")
 	now := time.Now()
 	// SQL_TIME_STRUCT only supports hours, minutes and seconds
-	now = time.Date(1, time.January, 1, now.Hour(), now.Minute(), now.Second(), 0, time.Local)
+	now = time.Date(1, time.January, 1, now.Hour(), now.Minute(), now.Second(), 0, TimeZone)
 	_, err = db.Exec("insert into temp (time) values(?)", now)
 	if err != nil {
 		t.Fatal(err)
